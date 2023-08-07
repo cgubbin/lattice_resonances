@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "slrs"
+version = "0.1.0"
+description = ""
+authors = ["Christopher Gubbin <c.r.gubbin@soton.ac.uk>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+matplotlib = "^3.7.2"
+seaborn = "^0.12.2"
+numpy = "^1.24"
+aenum = "^3.1.15"
+toml = "^0.10.2"
+verboselogs = "^1.7"
+numba = "^0.57.1"
+tqdm = "^4.65.0"
+numba-progress = "^1.0.0"
+
+[tool.coverage.paths]
+source = ["src", "*/site-packages"]
+
+[tool.coverage.run]
+branch = true
+source = ["slrs"]
+
+[tool.coverage.report]
+show_missing = true
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
