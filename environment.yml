@@ -1,4 +1,4 @@
-name: inverse_design_branch
+name: lattice_resonances
 channels:
   - conda-forge
   # To get a reproducible setup we decide not to use default channels, as
