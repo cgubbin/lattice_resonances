@@ -1,0 +1,21 @@
+[Lattice]
+symmetry = "Rectangular"
+lengths = [ 8000.0, 8000.0,]
+background_index = 1.0
+coupling = "SPP"
+
+[Grid]
+minimum_wavevector_im = 0.0
+maximum_wavevector_im = 785398.1633974481
+minimum_wavenumber_icm = 800
+maximum_wavenumber_icm = 1000
+number_of_wavevectors = 99
+number_of_wavelengths = 100
+
+[Particle]
+radius_nm = 1000.0
+internal_dielectric_function_file = "SiC.tab"
+
+[Field]
+polarisation = "TM"
+probe = "EnsembleAverage"

@@ -1,0 +1,10 @@
+name: inverse_design_branch
+channels:
+  - conda-forge
+  # To get a reproducible setup we decide not to use default channels, as
+  # these may be different for different users
+  - nodefaults
+dependencies:
+  - python=3.9
+  - mamba
+  - poetry=1.*
