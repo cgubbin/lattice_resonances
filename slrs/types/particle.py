@@ -26,19 +26,19 @@ class Particle:
         # eps_inf = 5.57
         # gamma = 0.018
         # plasma = 9.615
-        eps_inf = 5.3
-        plasma = 9.5
-        gamma = 0.013
-        self.internal_dielectric_function = lambda x: eps_inf - plasma ** 2 / nanometre_to_ev(x) / (nanometre_to_ev(x) + 1j * gamma)
+        # eps_inf = 5.3
+        # plasma = 9.5
+        # gamma = 0.013
+        # self.internal_dielectric_function = lambda x: eps_inf - plasma ** 2 / nanometre_to_ev(x) / (nanometre_to_ev(x) + 1j * gamma)
         # SiC
-        # eps_inf = 6.52
-        # to = 0.09887739825047723 * 0.925
-        # lo = 0.12026467248020425 * 0.925
-        # gamma = 0.0004959367937328012
-        # self.internal_dielectric_function = lambda x: (
-        #     eps_inf * (lo ** 2 - nanometre_to_ev(x) * (nanometre_to_ev(x) + 1j * gamma))
-        #         / (to ** 2 - nanometre_to_ev(x) * (nanometre_to_ev(x) + 1j * gamma))
-        # )
+        eps_inf = 6.52
+        to = 0.09887739825047723 * 0.925
+        lo = 0.12026467248020425 * 0.925
+        gamma = 0.0004959367937328012
+        self.internal_dielectric_function = lambda x: (
+            eps_inf * (lo ** 2 - nanometre_to_ev(x) * (nanometre_to_ev(x) + 1j * gamma))
+                / (to ** 2 - nanometre_to_ev(x) * (nanometre_to_ev(x) + 1j * gamma))
+        )
 
 
     @classmethod

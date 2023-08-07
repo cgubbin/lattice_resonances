@@ -1,12 +1,13 @@
 [Lattice]
 symmetry = "Rectangular"
-lengths = [ 8000.0, 8000.0,]
+lengths = [ 6000, 6000,]
 background_index = 1.0
 coupling = "SPP"
+finite_extent = [ 25, 25,]
 
 [Grid]
 minimum_wavevector_im = 0.0
-maximum_wavevector_im = 785398.1633974481
+maximum_wavevector_im = 1047197.5511965976
 minimum_wavenumber_icm = 800
 maximum_wavenumber_icm = 1000
 number_of_wavevectors = 99

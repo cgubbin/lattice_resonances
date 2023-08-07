@@ -172,7 +172,7 @@ class Calculation:
         for ii in range(extent[0] * extent[1]):
             self.lattice_inverse_polarisability[
                 ..., 3*ii:3*(ii+1), 3*ii:3*(ii+1)
-            ] = single_particle_inverse_polarisability_tensor[:, 0, ...]
+            ] = single_particle_inverse_polarisability_tensor[:, 0, :3, :3]
 
         seconds_elapsed = (dt.now() - start).total_seconds()
         logger.success(f"inverse polarisability tensor built in {seconds_elapsed:.3f}s")
