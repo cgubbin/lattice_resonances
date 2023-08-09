@@ -32,8 +32,8 @@ class Particle:
         # self.internal_dielectric_function = lambda x: eps_inf - plasma ** 2 / nanometre_to_ev(x) / (nanometre_to_ev(x) + 1j * gamma)
         # SiC
         eps_inf = 6.52
-        to = 0.09887739825047723 * 0.925
-        lo = 0.12026467248020425 * 0.925
+        to = 0.09887739825047723 * (0.925 + 0.015)
+        lo = 0.12026467248020425 * (0.925 + 0.015)
         gamma = 0.0004959367937328012
         self.internal_dielectric_function = lambda x: (
             eps_inf * (lo ** 2 - nanometre_to_ev(x) * (nanometre_to_ev(x) + 1j * gamma))

@@ -161,11 +161,17 @@ class Field:
         start = dt.now()
 
         # angle of in-plane propagation in spherical coordinates
+        wavevectors_im = 2. * np.pi / (wavelengths_nm * 1e-9) * lattice.background_index
+        out_of_plane_wavevectors_im = np.emath.sqrt(
+            wavevectors_im ** 2
+                - np.linalg.norm(in_plane_wavevectors_im, axis=-1) ** 2
+        )
+        # angle of in-plane propagation in spherical coordinates
         phi = np.arctan2(in_plane_wavevectors_im[..., 1], in_plane_wavevectors_im[..., 0])
         # azimuthal angle from surface normal
         theta = np.arctan2(
             np.sqrt(in_plane_wavevectors_im[..., 0] ** 2 + in_plane_wavevectors_im[..., 1] ** 2),
-            in_plane_wavevectors_im[..., 2]
+            np.where(np.imag(out_of_plane_wavevectors_im) == 0.0, np.real(out_of_plane_wavevectors_im), 0.0)
         )
 
         # electric field stacked in the same way as the wavevector / energy grid with the last
@@ -276,6 +282,8 @@ class Field:
                         exponent
                     )
 
+        electric_field = np.where(theta[..., np.newaxis] != np.pi / 2, electric_field, 0.0)
+
 
         seconds_elapsed = (dt.now() - start).total_seconds()
         logger.success(f"calculated source vector in {seconds_elapsed}")
@@ -283,17 +291,23 @@ class Field:
 
     def _infinite(
         self,
-        _lattice: Lattice,
+        lattice: Lattice,
         in_plane_wavevectors_im: npt.NDArray[np.float64],
         wavelengths_nm: npt.NDArray[np.float64],
     ) -> npt.NDArray[np.complex128]:
 
+        # todo -> add in sphp
+        wavevectors_im = 2. * np.pi / (wavelengths_nm * 1e-9) * lattice.coupled_mode_index(wavelengths_nm)
+        out_of_plane_wavevectors_im = np.emath.sqrt(
+            wavevectors_im ** 2
+                - np.linalg.norm(in_plane_wavevectors_im, axis=-1) ** 2
+        )
         # angle of in-plane propagation in spherical coordinates
         phi = np.arctan2(in_plane_wavevectors_im[..., 1], in_plane_wavevectors_im[..., 0])
         # azimuthal angle from surface normal
         theta = np.arctan2(
             np.sqrt(in_plane_wavevectors_im[..., 0] ** 2 + in_plane_wavevectors_im[..., 1] ** 2),
-            in_plane_wavevectors_im[..., 2]
+            np.where(np.imag(out_of_plane_wavevectors_im) == 0.0, np.real(out_of_plane_wavevectors_im), 0)
         )
 
         stacked_field = np.zeros((*wavelengths_nm.shape, 6), dtype=np.complex128)
@@ -320,6 +334,17 @@ class Field:
                 stacked_field[..., 1] = 1 / np.sqrt(2) * (np.sin(phi) * np.cos(theta) + 1j * np.cos(phi))
                 stacked_field[..., 2] = - np.sin(theta) / np.sqrt(2)
 
+
+        stacked_field = np.where(theta[..., np.newaxis] != np.pi / 2, stacked_field, 0.0)
+
+        if (positions_in_cell_nm := lattice.positions_in_cell()) is not None:
+            for positions_nm in positions_in_cell_nm:
+                stacked_field = np.concatenate([
+                    stacked_field,
+                    stacked_field * np.exp(1j * np.dot(in_plane_wavevectors_im, 1e-9 * positions_nm))[..., np.newaxis]
+                    ],
+                    axis=-1
+                )
         return stacked_field
 
     def generate(

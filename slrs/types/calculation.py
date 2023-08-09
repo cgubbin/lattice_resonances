@@ -17,11 +17,12 @@ import toml
 from aenum import Enum
 from numba import jit, prange, set_num_threads
 from numba_progress import ProgressBar
-from scipy.constants import e, hbar, speed_of_light
+from scipy.constants import e, epsilon_0, hbar, mu_0, speed_of_light
 from slrs.dyadics.direct import DirectDyadic
 from slrs.dyadics.ewald import EwaldDyadic
 from slrs.types.field import Field
 from slrs.types.lattice import Lattice
+from slrs.types.lattice import Symmetry
 from slrs.types.particle import Particle
 from slrs.utils.conversions import ev_to_nanometre, nanometre_to_ev, nanometre_to_wavenumber, wavenumber_to_nanometre
 from slrs.utils.logging import logger
@@ -96,7 +97,31 @@ class Grid:
         return np.linspace(self.minimum_wavevector_im, self.maximum_wavevector_im, self.number_of_wavevectors)
 
     def wavelengths_nm(self) -> npt.NDArray[np.float64]:
-        return np.linspace(self.minimum_wavelength_nm, self.maximum_wavelength_nm, self.number_of_wavelengths)
+        """
+        Returns the wavelength grid in nanometres.
+
+        To get a uniform grid in the preferred unit the grid is generated as a
+        linspace in that unit, then cast back to nanometres.
+        """
+        match self.preferred_unit:
+            case SpectralUnit.Nanometres:
+                return np.linspace(self.minimum_wavelength_nm, self.maximum_wavelength_nm, self.number_of_wavelengths)
+            case SpectralUnit.Wavenumbers:
+                return wavenumber_to_nanometre(
+                    np.linspace(
+                        nanometre_to_wavenumber(self.maximum_wavelength_nm),
+                        nanometre_to_wavenumber(self.minimum_wavelength_nm),
+                        self.number_of_wavelengths
+                    )
+                )
+            case SpectralUnit.ElectronVolts:
+                return ev_to_nanometre(
+                    np.linspace(
+                        nanometre_to_ev(self.maximum_wavelength_nm),
+                        nanometre_to_ev(self.minimum_wavelength_nm),
+                        self.number_of_wavelengths
+                    )
+                )
 
     def generate(self) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         wavevectors_x, wavelengths_nm = np.meshgrid(
@@ -206,26 +231,35 @@ class Calculation:
             self.lattice.background_index
         )[:, 0, ...]
 
-        self.single_particle_inverse_polarisability = np.block([
-            [single_particle_inverse_polarisability, np.zeros_like(single_particle_inverse_polarisability)],
-            [np.zeros_like(single_particle_inverse_polarisability), single_particle_inverse_polarisability],
-        ])
+        if self.lattice.symmetry == Symmetry.Honeycomb:
+            self.single_particle_inverse_polarisability = np.block([
+                [single_particle_inverse_polarisability, np.zeros_like(single_particle_inverse_polarisability)],
+                [np.zeros_like(single_particle_inverse_polarisability), single_particle_inverse_polarisability],
+            ])
+        else:
+            self.single_particle_inverse_polarisability = single_particle_inverse_polarisability
 
 
         seconds_elapsed = (dt.now() - start).total_seconds()
         logger.success(f"inverse polarisability tensor built in {seconds_elapsed:.3f}s")
 
+        start = dt.now()
+        logger.info("constructing field source vector")
         self.source_vector = self.field.generate(
             self.lattice,
             in_plane_wavevectors_im,
             wavelengths_nm
         )
+        seconds_elapsed = (dt.now() - start).total_seconds()
+        logger.success(f"source vector constructed in {seconds_elapsed:.3f}s")
 
 
         builder = EwaldDyadic()
         cutoff = 5
         evaluation_point = np.array([0.0, 0.0, 0.0])
 
+        start = dt.now()
+        logger.info("constructing Green's Dyadic")
         self.matrix_a = builder.construct(
             self.lattice.basis_vectors,
             self.lattice.reciprocal_vectors,
@@ -238,9 +272,11 @@ class Calculation:
             cutoff,
             include_origin=False
         )
+        seconds_elapsed = (dt.now() - start).total_seconds()
+        logger.success(f"dyadic constructed in {seconds_elapsed:.3f}s")
 
     @staticmethod
-    @jit(nopython=True)
+    @jit(nopython=True, parallel=True)
     def _solve_finite_inner(
         solution_vector,
         lattice_inverse_polarisability,
@@ -310,24 +346,21 @@ class Calculation:
         wavevectors_im = 2 * np.pi / (1e-9 * wavelengths_nm) # * coupled_mode_index
         unique_wavevectors_im = wavevectors_im[:, 0]
 
-        self.solution_vector = np.zeros((*wavevectors_im.shape, 6), dtype=np.complex128)
-        self.test= np.zeros_like(wavevectors_im, dtype=np.float64)
+        if (positions_in_cell_nm := self.lattice.positions_in_cell()) is None:
+            self.solution_vector = np.zeros((*wavevectors_im.shape, 6), dtype=np.complex128)
+        else:
+            self.solution_vector = np.zeros((*wavevectors_im.shape, 6 * (positions_in_cell_nm.shape[0] + 1)), dtype=np.complex128)
 
         start = dt.now()
 
         for ll in tqdm(range(wavevectors_im.shape[1]), leave=False):
-            # self.solution_vector[:, ll] = np.linalg.solve(
-            #     (
-            #         self.single_particle_inverse_polarisability
-            #             - self.matrix_a[:, ll, ...]
-            #     ),
-            #     self.source_vector[:, ll, ...]
-            # )
-            inv_mat = (#np.linalg.inv(
-                    # self.single_particle_inverse_polarisability
+            self.solution_vector[:, ll] = np.linalg.solve(
+                (
+                    self.single_particle_inverse_polarisability
                         - self.matrix_a[:, ll, ...]
-                )
-            self.test[..., ll] = np.real(self.matrix_a[:, ll, 1, 1]) #+ inv_mat[..., 1, 1] + inv_mat[..., 2, 2]
+                ),
+                self.source_vector[:, ll, ...]
+            )
 
         seconds_elapsed = (dt.now() - start).total_seconds()
         logger.success(f"linear system solved in {seconds_elapsed:.3f}s")
@@ -364,22 +397,39 @@ class Calculation:
 
     @staticmethod
     def _matrix_m(
-        x: npt.NDArray[np.complex128],
-        y: npt.NDArray[np.complex128],
-        z: npt.NDArray[np.complex128],
+        diffracted_order_in_plane_wavevectors_inm: npt.NDArray[np.complex128],
+        out_of_plane_wavevectors_inm: npt.NDArray[np.complex128],
+        wavevectors_inm: npt.NDArray[np.complex128],
+        reflectance: bool
     ) -> npt.NDArray[np.complex128]:
-        matrix_m = np.zeros((*x.shape, 3, 3), dtype=np.complex128)
-        matrix_o = np.zeros((*x.shape, 3, 3), dtype=np.complex128)
+        matrix_d = np.zeros((*wavevectors_inm.shape, 3, 3), dtype=np.complex128)
+        matrix_o = np.zeros((*wavevectors_inm.shape, 3, 3), dtype=np.complex128)
 
-        matrix_m[..., 0, 0] = 1 - x ** 2
-        matrix_m[..., 0, 1] = - x * y
-        matrix_m[..., 0, 2] = - x * z
-        matrix_m[..., 1, 0] = - x * y
-        matrix_m[..., 1, 1] = 1 - y ** 2
-        matrix_m[..., 1, 2] = - y * z
-        matrix_m[..., 2, 2] = - x * z
-        matrix_m[..., 2, 2] = - y * z
-        matrix_m[..., 2, 2] = 1 - z ** 2
+
+        theta = np.arctan2(
+            np.linalg.norm(diffracted_order_in_plane_wavevectors_inm, axis=-1),
+            np.where(np.imag(out_of_plane_wavevectors_inm) == 0.0, np.real(out_of_plane_wavevectors_inm), 0)
+        )
+        if reflectance:
+            theta = np.pi - theta
+        phi = np.arctan2(
+            diffracted_order_in_plane_wavevectors_inm[..., 1],
+            diffracted_order_in_plane_wavevectors_inm[..., 0]
+        )
+
+        x = np.cos(phi) * np.sin(theta)
+        y = np.sin(phi) * np.sin(theta)
+        z = np.cos(theta)
+
+        matrix_d[..., 0, 0] = 1 - x ** 2
+        matrix_d[..., 0, 1] = - x * y
+        matrix_d[..., 0, 2] = - x * z
+        matrix_d[..., 1, 0] = - x * y
+        matrix_d[..., 1, 1] = 1 - y ** 2
+        matrix_d[..., 1, 2] = - y * z
+        matrix_d[..., 2, 2] = - x * z
+        matrix_d[..., 2, 2] = - y * z
+        matrix_d[..., 2, 2] = 1 - z ** 2
 
         matrix_o[..., 0, 1] = - z
         matrix_o[..., 0, 2] = y
@@ -390,66 +440,138 @@ class Calculation:
 
 
         return np.block([
-            [matrix_m, matrix_o],
-            [matrix_o, matrix_m],
+            [matrix_d, matrix_o],
+            [-matrix_o, matrix_d],
         ])
 
 
-    def _extinction_infinite(self) -> npt.NDArray[np.complex128]:
+    def _extinction_infinite(self, reflectance: bool = True) -> npt.NDArray[np.complex128]:
         # We actually find the reflectance...
         # the polarisations in the unit cell are stored in the solution_vector
 
         # find the vector F_m_n
-        # cutoff = 5
+        cutoff = 0
 
-        # in_plane_wavevectors_im, wavelengths_nm = self.grid.generate()
+        in_plane_wavevectors_im, wavelengths_nm = self.grid.generate()
 
-        # ff_wavevectors_im = 2 * np.pi / (1e-9 * wavelengths_nm)
-        # rl_ms = [np.zeros(3)]
+        in_plane_wavevectors_inm = in_plane_wavevectors_im * 1e-9
+        far_field_wavevectors_inm = 2 * np.pi / wavelengths_nm
 
-        # stacked_field_vector = np.zeros((*wavelengths_nm.shape, 6), dtype=np.complex128)
+        # The location of the measurement in nanometres
+        evaluation_point_nm = np.zeros(3)
 
-        # wavevectors_im = 2 * np.pi / (wavelengths_nm * 1e-9)
+        # electric field, followed by magnetic field
+        scattered_far_field = np.zeros((*wavelengths_nm.shape, 6), dtype=np.complex128)
 
-        # for m, n in product(range(-cutoff, cutoff + 1), range(-cutoff, cutoff + 1)):
-        #     bragg_wavevector_im = sum(
-        #         i * b for i, b in zip([m, n], self.lattice.reciprocal_vectors)
-        #     )
-        #     diffracted_order_in_plane_wavevectors_im = in_plane_wavevectors_im
-        #     diffracted_order_in_plane_wavevectors_im[..., 0] + bragg_wavevector_im[0]
-        #     diffracted_order_in_plane_wavevectors_im[..., 1] + bragg_wavevector_im[1]
+        wavevectors_inm = 2 * np.pi / wavelengths_nm * self.lattice.coupled_mode_index(wavelengths_nm)
 
-        #     kz = np.emath.sqrt(
-        #         wavevectors_im ** 2
-        #             - diffracted_order_in_plane_wavevectors_im[..., 0] ** 2
-        #             - diffracted_order_in_plane_wavevectors_im[..., 1] ** 2
-        #     )
-
-        #     # exponent = - 1j * np.dot(diffracted_order_in_plane_wavevectors_im, rl_m)
-
-        #     x = diffracted_order_in_plane_wavevectors_im[..., 0] / wavevectors_im
-        #     y = diffracted_order_in_plane_wavevectors_im[..., 1] / wavevectors_im
-        #     z = kz / wavevectors_im
-        #     m = self._matrix_m(x, y, z)
-        #     result = sum(
-        #             self.solution_vector * np.exp(- 1j * np.dot(diffracted_order_in_plane_wavevectors_im, rl_m))[..., np.newaxis]
-        #             for rl_m in rl_ms
-        #         ) * wavevectors_im[..., np.newaxis] * 2 * np.pi * 1j / self.lattice.unit_cell_area() / kz[..., np.newaxis]
+        unit_cell_area_nm2 = self.lattice.unit_cell_area() / (1e-18)
 
 
-        #     stacked_field_vector += np.einsum(
-        #         "...ij,...j",
-        #         m, result
-        #     )
+        for m, n in product(range(-cutoff, cutoff + 1), range(-cutoff, cutoff + 1)):
+            reciprocal_wavevectors_inm = sum(
+                i * b * 1e-9 for i, b in zip([m, n], self.lattice.reciprocal_vectors)
+            )
+            diffracted_order_in_plane_wavevectors_inm = in_plane_wavevectors_inm + reciprocal_wavevectors_inm
 
-        # self.stacked_field_vector = stacked_field_vector
+
+            out_of_plane_wavevectors_inm = np.emath.sqrt(
+                wavevectors_inm ** 2
+                    - np.linalg.norm(
+                        diffracted_order_in_plane_wavevectors_inm,
+                        axis=-1
+                    ) ** 2
+            )
+
+            x = diffracted_order_in_plane_wavevectors_inm[..., 0] / wavevectors_inm
+            y = diffracted_order_in_plane_wavevectors_inm[..., 1] / wavevectors_inm
+            z = out_of_plane_wavevectors_inm / wavevectors_inm
+
+            theta = np.arctan2(
+                np.linalg.norm(diffracted_order_in_plane_wavevectors_inm, axis=-1),
+                np.where(np.imag(out_of_plane_wavevectors_inm) == 0.0, np.real(out_of_plane_wavevectors_inm), 0)
+            )
+            if reflectance:
+                theta = np.pi - theta
+
+            phi = np.arctan2(
+                diffracted_order_in_plane_wavevectors_inm[..., 1],
+                diffracted_order_in_plane_wavevectors_inm[..., 0]
+            )
+            x = np.cos(phi) * np.sin(theta)
+            y = np.sin(phi) * np.sin(theta)
+            z = np.cos(theta)
+
+            m = self._matrix_m(
+                diffracted_order_in_plane_wavevectors_inm,
+                out_of_plane_wavevectors_inm,
+                wavevectors_inm,
+                reflectance
+            )
+
+            # impl Eq 35
+            summed_polarisation = self.solution_vector[..., 0:6] * np.exp(
+                                1j * np.dot(diffracted_order_in_plane_wavevectors_inm, evaluation_point_nm)
+            )[..., np.newaxis]
+            if (positions_in_cell_nm := self.lattice.positions_in_cell()) is not None:
+                for ii, positions_nm in enumerate(positions_in_cell_nm):
+                    summed_polarisation += self.solution_vector[..., 6*(ii + 1):6*(ii + 2)] * np.exp(
+                                1j * np.dot(diffracted_order_in_plane_wavevectors_inm, evaluation_point_nm - positions_nm)
+                            )[..., np.newaxis]
+            result = summed_polarisation * (
+                    wavevectors_inm[..., np.newaxis] ** 2
+                        * 2 * np.pi * 1j
+                        / unit_cell_area_nm2
+                        / out_of_plane_wavevectors_inm[..., np.newaxis]
+            ) / 1e-27
 
 
-        return (self.test)
-        # return np.real(
-        #     self.stacked_field_vector[..., 0] * self.stacked_field_vector[..., 4]
-        #         - self.stacked_field_vector[..., 1] * self.stacked_field_vector[..., 3]
-        # )
+            result = np.einsum(
+                "...ij,...j",
+                m, result
+            )
+
+            scattered_far_field += np.where(
+                np.imag(out_of_plane_wavevectors_inm)[..., np.newaxis] == 0.0, result, 0.0
+            )
+
+        # Add zero-order input field contribution
+        self.scattered_far_field = scattered_far_field * 0.0 + self.source_vector[..., :6]
+        self.total_source = self.source_vector[..., :6]
+
+        if (positions_in_cell_nm := self.lattice.positions_in_cell()) is not None:
+            for ii in range(positions_in_cell_nm.shape[0]):
+                self.scattered_far_field += self.source_vector[...,6*(ii+1):6*(ii+2)]
+                self.total_source += self.source_vector[...,6*(ii+1):6*(ii+2)]
+
+        denominator = - np.real(
+            self.total_source[..., 0] * self.total_source[..., 4]
+                - self.total_source[..., 1] * self.total_source[..., 3]
+        )
+
+        renormalised_denominator = np.where(
+            denominator != 0.0,
+            denominator,
+            1e10
+        )
+
+
+        self.scattered_far_field = scattered_far_field
+
+
+
+
+        z = np.sqrt(epsilon_0 * self.lattice.background_index ** 2 / mu_0)
+
+        if reflectance:
+            factor = -1
+        else:
+            factor = 1
+
+        return factor * np.real(
+            self.scattered_far_field[..., 0] * self.scattered_far_field[..., 4]
+                - self.scattered_far_field[..., 1] * self.scattered_far_field[..., 3]
+        ) / renormalised_denominator
 
 
 

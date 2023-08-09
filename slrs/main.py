@@ -4,6 +4,7 @@ import sys
 import toml
 
 import numpy as np
+from scipy.constants import speed_of_light
 
 from slrs.types.calculation import Calculation
 from slrs.types.lattice import n_spp
@@ -18,7 +19,7 @@ if __name__ == "__main__":
     # The scan we are doing
 
     array_sizes = np.linspace(5, 100, 20, dtype=np.int32)
-    period_nm = 6000
+    period_nm = float(sys.argv[2])
 
 
     for extent in array_sizes:
@@ -26,7 +27,8 @@ if __name__ == "__main__":
         data = toml.load(input_file)
         data['Lattice']['finite_extent'] = [extent, extent]
         data['Lattice']['lengths'] = [period_nm, period_nm]
-        data['Grid']['maximum_wavevector_im'] = 2 * np.pi / (period_nm * 1e-9)
+        data['Grid']['maximum_wavevector_im'] = 2 * 2 * np.pi / (10e-6)
+        data['Grid']['minimum_wavevector_im'] = - 2 * 2 * np.pi / (10e-6)
 
         probe = data['Field']['probe']
 
@@ -44,6 +46,10 @@ if __name__ == "__main__":
         scaled_wavevectors = wavevectors / (np.pi / (calculation.lattice.lengths_nm[0] * 1e-9))
 
         xx, yy = calculation.plot_grid()
+        unique_xx = xx[0] * calculation.lattice.background_index
+        omega = speed_of_light * unique_xx / calculation.lattice.background_index
+        wavelength_nm = speed_of_light / (omega / (2 * np.pi)) / 1e-9
+        wavenumber_icm = np.abs(nanometre_to_wavenumber(wavelength_nm))
 
         import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -53,13 +59,21 @@ if __name__ == "__main__":
 
         fig, ax = plt.subplots(figsize=(12, 12))
         xx = xx / (np.pi / (calculation.lattice.lengths_nm[0] * 1e-9))
+        unique_xx = unique_xx / (np.pi / (calculation.lattice.lengths_nm[0] * 1e-9))
         im1 = ax.contourf(xx, yy, extinction_tm, levels=levels, extend='both')
 
         ax.plot(scaled_wavevectors, nanometre_to_wavenumber(unique_wavelengths_nm))
         ax.plot(2.0 - scaled_wavevectors, nanometre_to_wavenumber(unique_wavelengths_nm))
+        ax.plot(unique_xx, wavenumber_icm)
         ax.set_ylabel("Wavenumber (1/cm)")
         ax.set_xlabel("Wavevector ($\pi / a$)")
-        ax.set_xlim(0, 2.0)
+        #ax.set_xlim(0, 2.0)
+        limit = data['Grid']['maximum_wavevector_im'] / (np.pi / (calculation.lattice.lengths_nm[0] * 1e-9))
+        ax.set_xlim(-limit, limit)
+        ax.set_ylim(
+            data['Grid']['minimum_wavenumber_icm'],
+            data['Grid']['maximum_wavenumber_icm'],
+        )
 
         divider = make_axes_locatable(ax)
         cax = divider.append_axes('right', size='5%', pad=0.05)

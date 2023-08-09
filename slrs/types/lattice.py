@@ -106,7 +106,6 @@ class Lattice:
             2 * np.pi * np.matmul(r_mat, self.basis_vectors[1]) / np.dot(self.basis_vectors[0], np.matmul(r_mat, self.basis_vectors[1])),
             2 * np.pi * np.matmul(r_mat, self.basis_vectors[0]) / np.dot(self.basis_vectors[1], np.matmul(r_mat, self.basis_vectors[0])),
         ]
-        print(self.reciprocal_vectors)
 
 
 

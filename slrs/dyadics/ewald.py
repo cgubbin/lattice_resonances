@@ -7,56 +7,67 @@ import numpy as np
 import numpy.typing as npt
 import scipy.special as sp
 
-def gamma(t: npt.NDArray[np.float64]):
-    t = np.asarray(t)
-    mask = np.abs(t) >= 1.0
-    out = np.zeros_like(t, dtype=np.complex128)
-    np.sqrt(1 - t ** 2 + 0j, out=out, where=np.invert(mask))
-    out = - 1j * out
-    np.sqrt(t ** 2 - 1 + 0j, out=out, where=mask)
-    return out
-
-
 
 @dataclass
 class Spectral:
 
     @staticmethod
+    def alpha(
+        reciprocal_wavevectors_inm: npt.NDArray[np.float64],
+        in_plane_wavevectors_inm: npt.NDArray[np.float64],
+        wavevectors_inm: npt.NDArray[np.float64],
+    ):
+        """
+        Defined in Eq. 3.11 of Jordan
+
+        Equivalent to sqrt( | k_nm + k_in |^2 - k^2) / 2
+        """
+        return np.sqrt(
+            np.linalg.norm(reciprocal_wavevectors_inm + in_plane_wavevectors_inm, axis=-1) ** 2
+                - wavevectors_inm ** 2
+        ) / 2
+
+    @staticmethod
     def fz(
-        gamma_inm: npt.NDArray[np.complex128],
+        alpha_inm: npt.NDArray[np.complex128],
         z_nm: npt.NDArray[np.float64],
         eta_inm: float
         ):
+        beta_p = alpha_inm / eta_inm + eta_inm * z_nm
+        beta_m = alpha_inm / eta_inm - eta_inm * z_nm
 
         return (
-            sp.erfc(gamma_inm/(2.*eta_inm) + eta_inm*z_nm)*np.exp(gamma_inm * z_nm)
-                + sp.erfc(gamma_inm/(2.*eta_inm) - eta_inm*z_nm)*np.exp(- gamma_inm * z_nm)
-        ) / gamma_inm
+            sp.erfc(beta_p)*np.exp(2 * alpha_inm * z_nm)
+                + sp.erfc(beta_m)*np.exp(- 2. * alpha_inm * z_nm)
+        ) / alpha_inm
+
 
     @staticmethod
     def fz1(
-        gamma_inm: npt.NDArray[np.complex128],
+        alpha_inm: npt.NDArray[np.complex128],
         z_nm: npt.NDArray[np.float64],
         eta_inm: float
         ):
+        beta_p = alpha_inm / eta_inm + eta_inm * z_nm
+        beta_m = alpha_inm / eta_inm - eta_inm * z_nm
 
-        return (
-            sp.erfc(gamma_inm/(2.*eta_inm) + eta_inm*z_nm)*np.exp(gamma_inm * z_nm)
-                - sp.erfc(gamma_inm/(2.*eta_inm) - eta_inm*z_nm)*np.exp(- gamma_inm * z_nm)
+        return 2. * (
+            sp.erfc(beta_p)*np.exp(2. * alpha_inm * z_nm)
+                - sp.erfc(beta_m)*np.exp(- 2. * alpha_inm * z_nm)
         )
 
     @staticmethod
     def fzz1(
-        gamma_inm: npt.NDArray[np.complex128],
+        alpha_inm: npt.NDArray[np.complex128],
         z_nm: npt.NDArray[np.float64],
         eta_inm: float
         ):
 
+        beta_p = alpha_inm / eta_inm + eta_inm * z_nm
         return (
-            gamma_inm ** 2 * Spectral.fz(gamma_inm, z_nm, eta_inm)
-                - 4. * eta_inm / np.sqrt(np.pi)
-                    * np.exp(- (gamma_inm - 2. * z_nm * eta_inm ** 2) ** 2 / 4 / eta_inm ** 2)
-                    * np.exp( - gamma_inm * z_nm)
+            4. * alpha_inm ** 2 * Spectral.fz(alpha_inm, z_nm, eta_inm)
+                - 8. * eta_inm / np.sqrt(np.pi)
+                    * np.exp(- (alpha_inm ** 2 + z_nm ** 2 * eta_inm ** 4) / eta_inm ** 2)
         )
 
     @staticmethod
@@ -125,8 +136,9 @@ class Spectral:
         out[..., 2, 2] += Spectral.zz(gamma_inm, evaluation_point_nm, eta_inm)
 
         return (
-            np.pi * out
+            out
                 * np.exp(1j * np.dot(beta_inm, evaluation_point_nm))[..., np.newaxis, np.newaxis] / unit_cell_area_nm2
+                / 8.
         )
 
     @staticmethod
@@ -153,11 +165,12 @@ class Spectral:
         off_diagonal[..., 2, 0] = - off_diagonal[..., 0, 2]
 
         off_diagonal[..., 1, 2] = f * beta_inm[..., 0]
-        off_diagonal[..., 2, 1] = - off_diagonal[..., 0, 2]
+        off_diagonal[..., 2, 1] = - off_diagonal[..., 1, 2]
 
         return (
-            np.pi * off_diagonal
+            off_diagonal * wavevectors_inm[..., np.newaxis, np.newaxis]
                 * np.exp(1j * np.dot(beta_inm, evaluation_point_nm))[..., np.newaxis, np.newaxis] / unit_cell_area_nm2
+                / 8.
         )
 
     @staticmethod
@@ -194,13 +207,17 @@ class Spectral:
             reciprocal_vector_inm = sum(i * b for (i, b) in zip([ii, jj], reciprocal_vectors_inm))
 
             beta_inm = reciprocal_vector_inm[np.newaxis, np.newaxis, :] + in_plane_wavevectors_inm
-            # gn = gamma(np.linalg.norm(beta_inm, axis=-1) / wavevectors_inm)
-            gamma_inm = gamma(np.linalg.norm(beta_inm, axis=-1) / wavevectors_inm) * wavevectors_inm
+
+            alpha_inm = Spectral.alpha(
+                reciprocal_vector_inm[np.newaxis, np.newaxis, :],
+                in_plane_wavevectors_inm,
+                wavevectors_inm
+            )
 
             diagonal += Spectral.single_term(
                 wavevectors_inm,
                 beta_inm,
-                gamma_inm,
+                alpha_inm,
                 unit_cell_area_nm2,
                 evaluation_point_nm,
                 eta_inm
@@ -210,7 +227,7 @@ class Spectral:
             off_diagonal += Spectral.off_diagonal(
                 wavevectors_inm,
                 beta_inm,
-                gamma_inm,
+                alpha_inm,
                 unit_cell_area_nm2,
                 evaluation_point_nm,
                 eta_inm
@@ -237,6 +254,68 @@ class Spatial:
         return (
             np.exp(-1j*wavevectors*radius)*sp.erfc(beta_m)
             + np.exp(1j*wavevectors*radius)*sp.erfc(beta_p)
+        )
+
+    @staticmethod
+    def fRnb(radius: float, wavevectors: npt.NDArray[np.float64], eta: float) -> npt.NDArray[np.complex128]:
+        """
+        Computes f(Rn) as defined by eq. 17
+
+        Computes f^2 \rho, related to the quantity in Eq. 52
+        """
+        beta_p = radius * eta + 1j * wavevectors/(2 * eta)
+        beta_m = radius * eta - 1j * wavevectors/(2 * eta)
+        return (
+            np.exp(-1j*wavevectors*radius)*sp.erfc(beta_m)
+            + np.exp(1j*wavevectors*radius)*sp.erfc(beta_p)
+        ) / radius / 2
+
+    @staticmethod
+    def gRn(radius: float, wavevectors: npt.NDArray[np.float64], eta: float) -> npt.NDArray[np.complex128]:
+        """
+        Computes g(Rn) as defined by eq. 17
+
+        Computes f^2 \rho, related to the quantity in Eq. 52
+        """
+        beta_p = radius * eta + 1j * wavevectors/(2 * eta)
+        beta_m = radius * eta - 1j * wavevectors/(2 * eta)
+        return (
+            - np.exp(-1j*wavevectors*radius)*sp.erfc(beta_m)
+            + np.exp(1j*wavevectors*radius)*sp.erfc(beta_p)
+        ) / radius / 2
+
+    @staticmethod
+    def aRn(radius: float, wavevectors: npt.NDArray[np.float64], eta: float) -> npt.NDArray[np.complex128]:
+        """
+        Computes g(Rn) as defined by eq. 17
+
+        Computes f^2 \rho, related to the quantity in Eq. 52
+        """
+        beta_m = radius * eta - 1j * wavevectors/(2 * eta)
+        return 2 * eta / np.sqrt(np.pi) * np.exp(- 1j * wavevectors * radius) * np.exp(- beta_m ** 2) / 2 / radius
+
+    @staticmethod
+    def bRn(radius: float, wavevectors: npt.NDArray[np.float64], eta: float) -> npt.NDArray[np.complex128]:
+        """
+        Computes g(Rn) as defined by eq. 17
+
+        Computes f^2 \rho, related to the quantity in Eq. 52
+        """
+        beta_p = radius * eta + 1j * wavevectors/(2 * eta)
+        return 2 * eta / np.sqrt(np.pi) * np.exp(1j * wavevectors * radius) * np.exp(- beta_p ** 2) / 2 / radius
+
+    @staticmethod
+    def fRn_koen(rho_nm: float, wavevectors_inm: npt.NDArray[np.float64], eta_inm: float) -> npt.NDArray[np.complex128]:
+        """
+        Computes f(Rn) as defined by eq. 17
+
+        Computes f^2 \rho, related to the quantity in Eq. 52
+        """
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+        return (
+            np.exp(-1j*wavevectors_inm*rho_inm)*sp.erfc(beta_m)
+            + np.exp(1j*wavevectors_inm*rho_inm)*sp.erfc(beta_p)
         )
 
     @staticmethod
@@ -286,17 +365,372 @@ class Spatial:
                 - wavevectors ** 2 *Spatial.fp0(wavevectors, eta)
         )
 
+    @staticmethod
+    def fppX(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dx2 = d2f_drho2 (drho_dx)^2 + df_drho d2rho_dx2
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dx = rho_vec_nm[0] / rho_nm
+        d2rho_dx2 = (rho_vec_nm[1] ** 2 + rho_vec_nm[2] ** 2) / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dx) ** 2 + df_drho * d2rho_dx2
 
     @staticmethod
-    def f_matrix(
-        modified_position_nm: npt.NDArray[np.float64],
+    def fpXpY(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dx2 = d2f_drho2 (drho_dx drho_dy) + df_drho d2rho_dxdy
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dx = rho_vec_nm[0] / rho_nm
+        drho_dy = rho_vec_nm[1] / rho_nm
+        d2rho_dxdy = - rho_vec_nm[0] * rho_vec_nm[1] / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dx * drho_dy) + df_drho * d2rho_dxdy
+
+    @staticmethod
+    def fpXpZ(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dxdz = d2f_drho2 (drho_dx drho_dz) + df_drho d2rho_dxdz
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dx = rho_vec_nm[0] / rho_nm
+        drho_dz = rho_vec_nm[2] / rho_nm
+        d2rho_dxdz = - rho_vec_nm[0] * rho_vec_nm[2] / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dx * drho_dz) + df_drho * d2rho_dxdz
+
+
+    @staticmethod
+    def fpYpZ(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dydz = d2f_drho2 (drho_dy drho_dz) + df_drho d2rho_dydz
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dy = rho_vec_nm[1] / rho_nm
+        drho_dz = rho_vec_nm[2] / rho_nm
+        d2rho_dydz = - rho_vec_nm[1] * rho_vec_nm[2] / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dy * drho_dz) + df_drho * d2rho_dydz
+
+
+    @staticmethod
+    def fppY(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dy2 = d2f_drho2 (drho_dy)^2 + df_drho d2rho_dy2
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dy = rho_vec_nm[1] / rho_nm
+        d2rho_dy2 = (rho_vec_nm[0] ** 2 + rho_vec_nm[2] ** 2) / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dy) ** 2 + df_drho * d2rho_dy2
+
+    @staticmethod
+    def fppZ(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns d2f_dz2 = d2f_drho2 (drho_dz)^2 + df_drho d2rho_dz2
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dz = rho_vec_nm[2] / rho_nm
+        d2rho_dz2 = (rho_vec_nm[0] ** 2 + rho_vec_nm[1] ** 2) / rho_nm ** 3
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+        d2f_drho2 = (
+            (2. / rho_nm ** 2 - wavevectors_inm ** 2) * f
+                - 2j * wavevectors_inm * g / rho_nm
+                + 2 * (a + b) / rho_nm
+                + 2 * eta_inm * (a * beta_m + b * beta_p)
+        )
+
+        return d2f_drho2 * (drho_dz) ** 2 + df_drho * d2rho_dz2
+
+
+    @staticmethod
+    def fpY(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns df_dy = df_drho (drho_dy)
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dy = rho_vec_nm[1] / rho_nm
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+
+        return df_drho * drho_dy
+
+    @staticmethod
+    def fpX(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns df_dy = df_drho (drho_dy)
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dx = rho_vec_nm[0] / rho_nm
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+
+        return df_drho * drho_dx
+
+    @staticmethod
+    def fpZ(
+            rho_vec_nm: npt.NDArray[np.float64],
+            wavevectors_inm: npt.NDArray[np.float64],
+            eta_inm: float
+        ) -> npt.NDArray[np.complex128]:
+        """
+        Returns df_dz = df_drho (drho_dz)
+        """
+
+        rho_nm = np.linalg.norm(rho_vec_nm)
+
+        drho_dz = rho_vec_nm[2] / rho_nm
+
+        beta_p = rho_nm * eta_inm + 1j * wavevectors_inm/(2 * eta_inm)
+        beta_m = rho_nm * eta_inm - 1j * wavevectors_inm/(2 * eta_inm)
+
+
+        a = Spatial.aRn(rho_nm, wavevectors_inm, eta_inm)
+        b = Spatial.bRn(rho_nm, wavevectors_inm, eta_inm)
+        f = Spatial.fRnb(rho_nm, wavevectors_inm, eta_inm)
+        g = Spatial.gRn(rho_nm, wavevectors_inm, eta_inm)
+
+        df_drho = (
+            - f / rho_nm
+                + g * 1j * wavevectors_inm
+                - a - b
+        )
+
+        return df_drho * drho_dz
+
+    @staticmethod
+    def f_matrix_koen(
+        position_nm: npt.NDArray[np.float64],
         evaluation_point_nm: npt.NDArray[np.float64],
         wavevectors_inm: npt.NDArray[np.float64],
         eta_inm: float
     ) -> npt.NDArray[np.complex128]:
 
-        radius_nm = np.linalg.norm(modified_position_nm)
-        rr_nm = np.outer(evaluation_point_nm, evaluation_point_nm) / radius_nm ** 2
+        # R_n = rn - r0
+        out = np.zeros((*wavevectors_inm.shape, 3, 3), dtype=np.complex128)
+
+        rho_vec_nm = position_nm - evaluation_point_nm
+
+        out[..., 0, 0] = Spatial.fppX(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 1, 1] = Spatial.fppY(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 2, 2] = Spatial.fppZ(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 0, 1] = Spatial.fpXpY(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 0, 2] = Spatial.fpXpZ(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 1, 2] = Spatial.fpYpZ(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 1, 0] = out[..., 0, 1]
+        out[..., 2, 0] = out[..., 0, 2]
+        out[..., 2, 1] = out[..., 1, 2]
+
+        return out
+
+
+    @staticmethod
+    def f_matrix(
+        position_nm: npt.NDArray[np.float64],
+        evaluation_point_nm: npt.NDArray[np.float64],
+        wavevectors_inm: npt.NDArray[np.float64],
+        eta_inm: float
+    ) -> npt.NDArray[np.complex128]:
+
+        # R_n = rn - r0
+        rn_nm = position_nm - evaluation_point_nm
+
+        radius_nm = np.linalg.norm(rn_nm)
+        rr_nm = np.outer(rn_nm, rn_nm) / radius_nm ** 2
 
         m2 = (
             Spatial.fppRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm
@@ -308,7 +742,8 @@ class Spatial:
 
     @staticmethod
     def off_diagonal_matrix(
-        modified_position_nm: npt.NDArray[np.float64],
+        position_nm: npt.NDArray[np.float64],
+        evaluation_point_nm: npt.NDArray[np.float64],
         wavevectors_inm: npt.NDArray[np.float64],
         eta_inm: float
     ) -> npt.NDArray[np.complex128]:
@@ -316,24 +751,35 @@ class Spatial:
         # wavevectors_im = wavevectors_im * 1e-9
         # eta = eta * 1e-9
 
-        radius_nm = np.linalg.norm(modified_position_nm)
-        rr = np.array([
-            [0.0, modified_position_nm[2], -modified_position_nm[1]],
-            [-modified_position_nm[2], 0.0, modified_position_nm[0]],
-            [modified_position_nm[1], -modified_position_nm[0], 0],
-        ]) / radius_nm
+        # radius_nm = np.linalg.norm(modified_position_nm)
+        # rr = np.array([
+        #     [0.0, modified_position_nm[2], -modified_position_nm[1]],
+        #     [-modified_position_nm[2], 0.0, modified_position_nm[0]],
+        #     [modified_position_nm[1], -modified_position_nm[0], 0],
+        # ]) / radius_nm
 
-        m1 = (
-            Spatial.fpRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm
-                - Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm ** 2
-        )
+        rho_vec_nm = position_nm - evaluation_point_nm
+
+        out = np.zeros((*wavevectors_inm.shape, 3, 3), dtype=np.complex128)
+
+        out[..., 0, 1] = Spatial.fpZ(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 0, 2] = - Spatial.fpY(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 1, 2] = Spatial.fpX(rho_vec_nm, wavevectors_inm, eta_inm)
+        out[..., 1, 0] = - out[..., 0, 1]
+        out[..., 2, 0] = - out[..., 0, 2]
+        out[..., 2, 1] = - out[..., 1, 2]
+
+        # m1 = (
+        #     Spatial.fpRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm
+        #         - Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm ** 2
+        # )
 
 
-        out = 1j * (
-            m1[..., np.newaxis, np.newaxis] * rr[np.newaxis, np.newaxis, ...] * wavevectors_inm[..., np.newaxis, np.newaxis]
-        )
+        # out = 1j * (
+        #     m1[..., np.newaxis, np.newaxis] * rr[np.newaxis, np.newaxis, ...] * wavevectors_inm[..., np.newaxis, np.newaxis]
+        # )
 
-        return out
+        return out * wavevectors_inm[..., np.newaxis, np.newaxis] * 1j
 
 
     @staticmethod
@@ -351,11 +797,12 @@ class Spatial:
 
         # loop over lattice sites (excluding origin):
         for (ii, jj) in product(range(-cutoff,cutoff+1), range(-cutoff, cutoff+1)):
-            if ii == 0 and jj == 0:
+            if ii == 0 and jj == 0 and np.all(evaluation_point_nm == 0.0):
                 continue
             position_nm = sum( i * a for (i, a) in zip([ii, jj], basis_vectors_nm) )
-            modified_r_nm = evaluation_point_nm - position_nm
-            radius_nm = np.linalg.norm(modified_r_nm)
+            rn_nm = position_nm - evaluation_point_nm
+            radius_nm = np.linalg.norm(rn_nm)
+
             reciprocal_vector_inm = sum(i * b for (i, b) in zip([ii, jj], reciprocal_vectors_inm))
             beta_inm = reciprocal_vector_inm[np.newaxis, np.newaxis, :] + in_plane_wavevectors_inm
             # **MODIFIED**: next line was exp(ic*dot(kb, Rvec))  --> exp(ic*dot(kb, Rvec - r))
@@ -366,21 +813,27 @@ class Spatial:
             )
 
             out += np.exp(
-                1j*np.dot(in_plane_wavevectors_inm, position_nm)#modified_r_nm - radius_nm)
+                1j*np.dot(in_plane_wavevectors_inm, position_nm)
             ) * (
-                Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm * wavevectors_inm ** 2
-                    + m1
+                Spatial.fRnb(radius_nm, wavevectors_inm, eta_inm) * wavevectors_inm ** 2
+                #Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm * wavevectors_inm ** 2
+                 #   + m1
                 )
 
-        if include_origin:
-            # add i=j=0 term that was skipped over above:
-            radius_nm = np.linalg.norm(evaluation_point_nm)
-            # **MODIFIED**: commented out next line and replaced with version immediately below:
-            #G_spatial += exp(ic*dot(kb, r)) * fRn(k, R, E) / (8*pi*R)	# if there's an issue, check +\- signs here for r
-            out += Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm
-        else:
-            # subtract off limit term as described by Capolino:
-            out += Spatial.fp0(wavevectors_inm, eta_inm) * wavevectors_inm ** 2 - 2j * wavevectors_inm ** 3
+
+        if np.all(evaluation_point_nm == 0.0):
+            if include_origin:
+                # add i=j=0 term that was skipped over above:
+                radius_nm = np.linalg.norm(evaluation_point_nm)
+                # **MODIFIED**: commented out next line and replaced with version immediately below:
+                #G_spatial += exp(ic*dot(kb, r)) * fRn(k, R, E) / (8*pi*R)	# if there's an issue, check +\- signs here for r
+                out += Spatial.fRn(radius_nm, wavevectors_inm, eta_inm) / radius_nm
+            else:
+                # subtract off limit term as described by Capolino:
+                out += (
+                    Spatial.fp0(wavevectors_inm, eta_inm)
+                        * wavevectors_inm ** 2 - 2j * wavevectors_inm ** 3
+                )
 
         return out  / ( 8 * np.pi )
 
@@ -399,27 +852,28 @@ class Spatial:
 
         # loop over lattice sites (excluding origin):
         for (ii, jj) in product(range(-cutoff,cutoff+1), range(-cutoff, cutoff+1)):
-            if ii == 0 and jj == 0:
+            if ii == 0 and jj == 0 and np.all(evaluation_point_nm == 0.0):
                 continue
 
             position_nm = sum( i * a for (i, a) in zip([ii, jj], basis_vectors_nm) )
-            modified_r_nm = evaluation_point_nm- position_nm
-            radius_nm = np.linalg.norm(modified_r_nm)
 
             reciprocal_vector_inm = sum(i * b for (i, b) in zip([ii, jj], reciprocal_vectors_inm))
             beta_inm = reciprocal_vector_inm[np.newaxis, np.newaxis, :] + in_plane_wavevectors_inm
 
             out += np.exp(
                 1j * np.dot(in_plane_wavevectors_inm, position_nm)
-            )[..., np.newaxis, np.newaxis] * Spatial.f_matrix(modified_r_nm, evaluation_point_nm, wavevectors_inm, eta_inm)
+            )[..., np.newaxis, np.newaxis] * Spatial.f_matrix_koen(position_nm, evaluation_point_nm, wavevectors_inm, eta_inm)
 
 
-        if include_origin:
-            radius_nm = np.linalg.norm(evaluation_point_nm)
-            out += Spatial.f_matrix(wavevectors_inm, radius_nm, eta_inm)
-        else:
-            for ii in range(3):
-                out[..., ii, ii] += (Spatial.fppp0(wavevectors_inm, eta_inm) + 2j * wavevectors_inm ** 3) / 3
+
+        if np.all(evaluation_point_nm == 0.0):
+            if include_origin:
+                # todo
+                # out += Spatial.f_matrix(wavevectors_inm, radius_nm, eta_inm)
+                out += 0
+            else:
+                for ii in range(3):
+                    out[..., ii, ii] += (Spatial.fppp0(wavevectors_inm, eta_inm) + 2j * wavevectors_inm ** 3) / 3
 
         return out / ( 8 * np.pi )
 
@@ -442,7 +896,7 @@ class Spatial:
             if ii == 0 and jj == 0:
                 continue
             position_nm = sum( i * a for (i, a) in zip([ii, jj], basis_vectors_nm) )
-            modified_r_nm = evaluation_point_nm- position_nm
+            modified_r_nm = evaluation_point_nm - position_nm
             radius_nm = np.linalg.norm(modified_r_nm)
 
             reciprocal_vector_inm = sum(i * b for (i, b) in zip([ii, jj], reciprocal_vectors_inm))
@@ -450,7 +904,7 @@ class Spatial:
 
             out += np.exp(
                 1j*np.dot(in_plane_wavevectors_inm, position_nm)
-            )[..., np.newaxis, np.newaxis] * Spatial.off_diagonal_matrix(position_nm, wavevectors_inm, eta_inm)
+            )[..., np.newaxis, np.newaxis] * Spatial.off_diagonal_matrix(position_nm, evaluation_point_nm, wavevectors_inm, eta_inm)
 
 
         return out / (8 * np.pi)
@@ -511,6 +965,11 @@ class Spatial:
             include_origin
         )
 
+        # diagonal_block -= (
+        #     Spatial.GD_single(wavevectors_inm, np.zeros(3), evaluation_point_nm + np.array([0.0, 0.0, 0.1]))
+        #         + Spatial.GD_single(wavevectors_inm, np.zeros(3), evaluation_point_nm + np.array([0.0, 0.0, -0.1]))
+        # ) / 2
+
 
         off_diagonal_block = Spatial.off_diagonal_block(
             basis_vectors_nm,
@@ -565,12 +1024,11 @@ class EwaldDyadic:
             evaluation_point_nm,
             cutoff,
             include_origin
-        ) * 4 * np.pi
+        ) #* 4 * np.pi
 
-        g_inm3 = (spatial + spectral)
 
-        # return spectral / 1e-27# / 4 / np.pi
-        return g_inm3 / 1e-27 # / 4 / np.pi
+        return (np.conj(spectral) + spatial) * 4 * np.pi / 1e-27 # / 4 / np.pi
+        # return (spectral + spatial) * 4 * np.pi / 1e-27 # / 4 / np.pi
 
     @staticmethod
     def construct(
@@ -601,7 +1059,6 @@ class EwaldDyadic:
 
         if positions_in_cell_nm is not None:
             positions_in_cell_nm = positions_in_cell_nm[0]
-            print(positions_in_cell_nm)
             off_site_21 = EwaldDyadic._construct(
                 basis_vectors,
                 reciprocal_vectors,
