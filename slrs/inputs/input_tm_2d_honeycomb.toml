@@ -1,0 +1,20 @@
+[Lattice]
+symmetry = "Honeycomb"
+lengths = [150.0]
+background_index = 1.5
+
+[Grid]
+minimum_wavevector_im = -83775804.0957278
+maximum_wavevector_im = 83775804.0957278
+minimum_energy_ev = 0.1
+maximum_energy_ev = 6.0
+number_of_wavevectors = 250
+number_of_wavelengths = 300
+
+[Particle]
+radius_nm = 18.0
+internal_dielectric_function_file = "Ag_EC.tab"
+
+[Field]
+polarisation = "TM"
+probe = "EnsembleAverage"

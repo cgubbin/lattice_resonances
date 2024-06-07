@@ -1,17 +1,17 @@
 [Lattice]
 symmetry = "Rectangular"
-lengths = [ 8000.0, 8000.0,]
+lengths = [ 12500.0, 12500.0,]
 background_index = 1.0
 coupling = "SPP"
-finite_extent = [ 15, 15,]
+finite_extent = [ 10, 10,]
 
 [Grid]
-minimum_wavevector_im = -1256637.0614359172
-maximum_wavevector_im = 1256637.0614359172
-minimum_wavenumber_icm = 800
-maximum_wavenumber_icm = 1000
-number_of_wavevectors = 99
-number_of_wavelengths = 100
+minimum_wavevector_im = -628318.5307179586
+maximum_wavevector_im = 628318.5307179586
+minimum_wavenumber_icm = 840
+maximum_wavenumber_icm = 885
+number_of_wavevectors = 199
+number_of_wavelengths = 200
 
 [Particle]
 radius_nm = 1000.0

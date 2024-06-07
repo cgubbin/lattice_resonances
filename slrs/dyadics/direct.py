@@ -1,29 +1,26 @@
-from dataclasses import dataclass, field
 from datetime import datetime as dt
 from tqdm.contrib.itertools import product
 from typing import List
-from typing import Tuple
 from typing import TYPE_CHECKING
 
 from slrs.utils.logging import logger
 
 if TYPE_CHECKING:
-    from slrs.types.calculation import Calculation
+    pass
 
 import numpy as np
-import numpy.ma as ma
 import numpy.typing as npt
-import scipy.special as sp
-from numba import jit, prange, complex128, float64, int64, set_num_threads
+
 
 def gamma(t: npt.NDArray[np.float64]):
     t = np.asarray(t)
     mask = np.abs(t) >= 1.0
     out = np.zeros_like(t, dtype=np.complex128)
-    np.sqrt(1 - t ** 2 + 0j, out=out, where=np.invert(mask))
-    out = - 1j * out
-    np.sqrt(t ** 2 - 1 + 0j, out=out, where=mask)
+    np.sqrt(1 - t**2 + 0j, out=out, where=np.invert(mask))
+    out = -1j * out
+    np.sqrt(t**2 - 1 + 0j, out=out, where=mask)
     return out
+
 
 def single_point(
     scratch: npt.NDArray[np.complex128],
@@ -35,20 +32,28 @@ def single_point(
     inv_delta_radius_m = np.eye(3) / np.linalg.norm(delta_point_m)
     delta_radius_m = np.eye(3) * np.linalg.norm(delta_point_m)
 
-    rr = np.outer(delta_point_m, delta_point_m) * inv_delta_radius_m ** 2
+    rr = np.outer(delta_point_m, delta_point_m) * inv_delta_radius_m**2
 
-    gf[...] = np.exp(
-        1j * wavevectors_im[..., np.newaxis, np.newaxis] * delta_radius_m[np.newaxis, ...]
-    ) / (4 * np.pi) * inv_delta_radius_m[np.newaxis, ...]
+    gf[...] = (
+        np.exp(
+            1j
+            * wavevectors_im[..., np.newaxis, np.newaxis]
+            * delta_radius_m[np.newaxis, ...]
+        )
+        / (4 * np.pi)
+        * inv_delta_radius_m[np.newaxis, ...]
+    )
 
-    prod[...] = inv_delta_radius_m[np.newaxis, ...] / wavevectors_im[..., np.newaxis, np.newaxis]
+    prod[...] = (
+        inv_delta_radius_m[np.newaxis, ...]
+        / wavevectors_im[..., np.newaxis, np.newaxis]
+    )
 
     scratch[...] = (
-        np.eye(3)[np.newaxis, ...] + 1j * prod - 1.0 * prod ** 2
-            + (
-                -1.0 - 3j * prod
-                + 3.0 * prod ** 2
-            ) * rr[np.newaxis, ...]
+        np.eye(3)[np.newaxis, ...]
+        + 1j * prod
+        - 1.0 * prod**2
+        + (-1.0 - 3j * prod + 3.0 * prod**2) * rr[np.newaxis, ...]
     ) * gf
 
 
@@ -58,39 +63,33 @@ def loop_inner(
     num_sites,
     extent,
     basis_vectors,
-    ):
-    gf = np.zeros((wavevectors_im.size,3, 3), dtype=np.complex128)
+):
+    gf = np.zeros((wavevectors_im.size, 3, 3), dtype=np.complex128)
     prod = np.zeros((wavevectors_im.size, 3, 3), dtype=np.complex128)
     scratch = np.zeros((wavevectors_im.size, 3, 3), dtype=np.complex128)
+    # For every combination of lattice sites in the array
     for ii, jj in product(range(num_sites), range(num_sites), leave=False):
+        # The self-interaction is zero
         if ii == jj:
             continue
-        r_i = (
-            ii % extent[0] * basis_vectors[0]
-                + ii // extent[0] * basis_vectors[1]
-        )
-        r_j = (
-            jj % extent[0] * basis_vectors[0]
-                 + jj // extent[0] * basis_vectors[1]
-        )
+        # Displacement vectors for sites i and j
+        r_i = ii % extent[0] * basis_vectors[0] + ii // extent[0] * basis_vectors[1]
+        r_j = jj % extent[0] * basis_vectors[0] + jj // extent[0] * basis_vectors[1]
+
+        # The vector distance between sites i and j
         delta_m = r_i - r_j
 
         scratch[:] = 0.0
         gf[:] = 0.0
         prod[:] = 0.0
 
-        single_point(
-            scratch,
-            wavevectors_im,
-            delta_m,
-            gf,
-            prod
-        )
+        # Construct the relevent element of the Green's dyadic into the matrix `scratch`
+        single_point(scratch, wavevectors_im, delta_m, gf, prod)
+        # And copy the result into the output array
         out[..., 3 * ii : 3 * (ii + 1), 3 * jj : 3 * (jj + 1)] = scratch
 
 
 class DirectDyadic:
-
     @staticmethod
     def _construct_inner(
         wavevectors_im,
@@ -98,10 +97,11 @@ class DirectDyadic:
         basis_vectors,
     ):
         num_sites = extent[0] * extent[1]
-        result = np.zeros((wavevectors_im.shape[0], wavevectors_im.shape[1], 3 * num_sites), dtype=np.complex128)
         unique_wavevectors_im = wavevectors_im[:, 0]
-
-        out = np.zeros((unique_wavevectors_im.size, 3 * num_sites, 3 * num_sites), dtype=np.complex128)
+        out = np.zeros(
+            (unique_wavevectors_im.size, 3 * num_sites, 3 * num_sites),
+            dtype=np.complex128,
+        )
 
         loop_inner(
             out,
@@ -112,7 +112,6 @@ class DirectDyadic:
         )
 
         return out
-
 
     def construct(
         self,
@@ -133,9 +132,7 @@ class DirectDyadic:
             np.asarray(basis_vectors),
         )
 
-
         seconds_elapsed = (dt.now() - start).total_seconds()
         logger.success(f"Green's dyadic constructed in  {seconds_elapsed}s")
 
         return out
-
